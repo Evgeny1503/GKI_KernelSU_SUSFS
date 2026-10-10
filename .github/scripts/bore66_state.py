@@ -107,6 +107,15 @@ TS_SLOT3_NEW_FORMS = [
         "\tANDROID_KABI_RESERVE(2);\n"
         "\tANDROID_KABI_RESERVE(3);\n"
     ),
+    # middle era (6.6.98..127, run 38081693624): dmabuf_info landed at
+    # slot 1 but user_dumpable USE(2) has not - blank line after the USE,
+    # then plain RESERVE(2..8).
+    (
+        "\tANDROID_KABI_USE(1, struct task_dma_buf_info *dmabuf_info);\n"
+        "\n"
+        "\tANDROID_KABI_RESERVE(2);\n"
+        "\tANDROID_KABI_RESERVE(3);\n"
+    ),
 ]
 
 SLOT3_USE = (
