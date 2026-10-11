@@ -975,6 +975,74 @@ jobs:
       page_size: ${{ inputs.page_size }}
     secrets: inherit
 
+  telegram-announce:
+    # Per-family mini-release digests posted into the Wild Kernels Testing
+    # forum topics (one topic per kernel branch). Skipped families (gated
+    # off by a single-family dispatch) are dropped; ran families post even
+    # when some jobs failed - the counts carry the bad news. Non-fatal by
+    # design: a Telegram outage must never fail a build.
+    name: Telegram Announce
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
+    needs:
+    - build-android12-5-10
+    - build-android13-5-10
+    - build-android13-5-15
+    - build-android14-5-15
+    - build-android14-6-1
+    - build-android15-6-6
+    - build-android16-6-12
+    runs-on: ubuntu-latest
+    env:
+      TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Post per-family digests to Telegram topics
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          if [ -z "$TG_TOKEN" ] || [ -z "$TG_CHAT" ]; then
+            echo "TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set; skipping announce."
+            exit 0
+          fi
+          RUN_ID="${{ github.run_id }}"
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${RUN_ID}"
+          NIGHTLY_URL="https://nightly.link/${{ github.repository }}/actions/runs/${RUN_ID}"
+          # Collect every page of the run's jobs (large runs exceed one page).
+          gh api --paginate \
+            "repos/${{ github.repository }}/actions/runs/${RUN_ID}/jobs?per_page=100" \
+            > /tmp/jobs.json || { echo "jobs fetch failed; skipping announce"; exit 0; }
+          python3 .github/scripts/telegram_digest.py \
+            --run-id "$RUN_ID" \
+            --branch "${{ github.ref_name }}" \
+            --event "${{ github.event_name }}" \
+            --run-url "$RUN_URL" \
+            --nightly-url "$NIGHTLY_URL" \
+            < /tmp/jobs.json > /tmp/digest.out
+          rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "digest build failed (rc=$rc); skipping announce"
+            exit 0
+          fi
+          sent=0
+          while IFS= read -r -d $'\x1e' rec; do
+            [ -z "$rec" ] && continue
+            topic="${rec%%$'\t'*}"
+            html_msg="${rec#*$'\t'}"
+            curl -sf --max-time 30 \
+              "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+              --data-urlencode "chat_id=${TG_CHAT}" \
+              --data-urlencode "message_thread_id=${topic}" \
+              --data-urlencode "parse_mode=HTML" \
+              --data-urlencode "disable_web_page_preview=true" \
+              --data-urlencode "text=${html_msg}" \
+              > /dev/null || { echo "WARN: telegram send to topic ${topic} failed"; continue; }
+            sent=$((sent + 1))
+          done < /tmp/digest.out
+          echo "announced ${sent} family digest(s)"
+
   update-verified-pins:
     concurrency:
       group: update-verified-pins-${{ github.repository }}
