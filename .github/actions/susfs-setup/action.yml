@@ -50,11 +50,40 @@ runs:
         echo "SUSFS_COMMIT=$SUSFS_COMMIT" >> "$GITHUB_ENV"
         echo "Using SUSFS commit: $SUSFS_COMMIT"
 
-        # Pershoot's latest two gki-android14-6.1-dev commits (currently the
-        # no-features core build + Toolkit coexistence fixes) only apply to
-        # KernelSU-Next (dev-susfs fork). Other flavors use the simonpunk
-        # checkout as-is.
+        # Pershoot's KernelSU-Next (dev-susfs fork) SUSFS fixes. Other flavors use
+        # the simonpunk checkout as-is.
+        #
+        # Three specific commits, in order (verified clean by rehearsal):
+        #   6387756 fs/susfs: Allow core to be built with no features
+        #   161c058 fs/susfs: Implement SuSFS and Toolkit coexistence
+        #     -> cherry-picked for ALL families: they touch only
+        #        kernel_patches/fs/susfs.c and apply cleanly on 6.1, 6.6
+        #        and 6.12 (tested per-branch).
+        #   35b2a01 Fix SELinux time side-channel detection
+        #     -> 6.1 ONLY, and NOT via cherry-pick: it rewrites 256 lines of
+        #        kernel_patches/50_add_susfs_in_gki-android14-6.1.patch, which
+        #        CONFLICTS on every branch (verified: even on its home 6.1
+        #        branch, since simonpunk's 50_add diverged). The old
+        #        'latest 2 of dev' cherry-pick left conflict markers inside
+        #        the 50_add file on 6.6/6.12 (runs 38081693624,
+        #        38095522254: every KernelSU-Next job died at
+        #        'malformed patch: <<<<<<< HEAD:kernel_patches/50_add...');
+        #        the 2>/dev/null || true swallowed the failed pick and the
+        #        poisoned file shipped into the kernel tree. Instead, take
+        #        pershoot's already-resolved 50_add file content directly
+        #        (git show at that commit - verified clean, 0 markers) and
+        #        overwrite the checkout's copy for the 6.1 family.
+        # Fail-loud: a failed pick/overwrite must kill the job, never march
+        # on with a half-merged tree.
         if [ "${{ inputs.root_flavor }}" = "next" ]; then
-          git fetch https://gitlab.com/pershoot/susfs4ksu.git gki-android14-6.1-dev || true
-          git log ..FETCH_HEAD --oneline -n 2 | awk '{print $1}' | tac | xargs git cherry-pick 2>/dev/null || true
+          git fetch https://gitlab.com/pershoot/susfs4ksu.git \
+            6387756d64b3ab9ececefc4523627a9ee05a7519 \
+            161c058fed5544a6573d87124f346dadd5c4962d \
+            35b2a01410643ff849dc79a26ec6fc4937d1a750
+          git cherry-pick 6387756d64b3ab9ececefc4523627a9ee05a7519
+          git cherry-pick 161c058fed5544a6573d87124f346dadd5c4962d
+          if [ "${{ inputs.version }}" = "android14-6.1" ]; then
+            git show 35b2a01410643ff849dc79a26ec6fc4937d1a750:kernel_patches/50_add_susfs_in_gki-android14-6.1.patch \
+              > kernel_patches/50_add_susfs_in_gki-android14-6.1.patch
+          fi
         fi
