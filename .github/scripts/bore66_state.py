@@ -123,14 +123,35 @@ TS_SLOT3_NEW_FORMS = [
     ),
 ]
 
-SLOT8_USE = (
-    "#ifdef CONFIG_SCHED_BORE\n"
-    "\t" + MARK + "\n"
-    "\tANDROID_KABI_USE(8, struct bore_state *bore_state);\n"
-    "#else\n"
-    "\tANDROID_KABI_RESERVE(8);\n"
-    "#endif\n"
-)
+SLOT_USES = {
+    8: (
+        "#ifdef CONFIG_SCHED_BORE\n"
+        "\t" + MARK + "\n"
+        "\tANDROID_KABI_USE(8, struct bore_state *bore_state);\n"
+        "#else\n"
+        "\tANDROID_KABI_RESERVE(8);\n"
+        "#endif\n"
+    ),
+    5: (
+        "#ifdef CONFIG_SCHED_BORE\n"
+        "\t" + MARK + "\n"
+        "\tANDROID_KABI_USE(5, struct bore_state *bore_state);\n"
+        "#else\n"
+        "\tANDROID_KABI_RESERVE(5);\n"
+        "#endif\n"
+    ),
+}
+
+# The DroidSpaces SYSVIPC kABI fix (applied earlier in the pipeline when the
+# DS feature is on) rewrites the task_struct tail: sysvsem takes slot 6 and
+# sysvshm takes slots 7+8 via _ANDROID_KABI_REPLACE - RESERVE(8) only
+# survives inside the dead #else branch. Splicing there compiles a kernel
+# whose active branch has no bore_state member (run 38119135607: every 6.6
+# job died with "no member named 'bore_state' in 'struct task_struct'").
+# When that form is present, fall back to slot 5 - the highest slot still
+# free (Google holds 1-2, DroidSpaces holds 6-8).
+DS_REPLACE_FORM = ("_ANDROID_KABI_REPLACE(ANDROID_KABI_RESERVE(7); "
+                   "ANDROID_KABI_RESERVE(8), struct sysv_shm sysvshm);")
 
 
 def process(path: str) -> bool:
@@ -178,27 +199,34 @@ def process(path: str) -> bool:
     out = out.replace(anchor,
                       "#endif // CONFIG_SCHED_BORE\n\n" + BORE_STATE_DEF +
                       "\nstruct sched_entity {", 1)
-    # Replace ONLY the tail's RESERVE(8) line: locate the matched form
-    # (unique), then the tail's slot-8 RESERVE after it. sched_rt_entity
-    # and sched_entity stop at RESERVE(4), so RESERVE(8) appears exactly
-    # once per file - enforce that.
-    r8 = "\tANDROID_KABI_RESERVE(8);\n"
-    if out.count(r8) != 1:
-        print(f"bore66-state: {path}: found {out.count(r8)} "
-              f"ANDROID_KABI_RESERVE(8) lines (expected 1)", file=sys.stderr)
+    # Replace ONLY the tail's slot RESERVE line. Slot choice is dynamic:
+    #   - DroidSpaces SYSVIPC form present -> slots 6-8 are consumed, use 5.
+    #   - otherwise -> slot 8 (the tail's last RESERVE, five lines below
+    #     the form's end in every known era). sched_rt_entity and
+    #     sched_entity stop at RESERVE(4), so RESERVE(5) and RESERVE(8)
+    #     each appear exactly once per file - enforce that.
+    if DS_REPLACE_FORM in out:
+        slot = 5
+    else:
+        slot = 8
+    r_slot = f"\tANDROID_KABI_RESERVE({slot});\n"
+    if out.count(r_slot) != 1:
+        print(f"bore66-state: {path}: found {out.count(r_slot)} "
+              f"ANDROID_KABI_RESERVE({slot}) lines (expected 1)",
+              file=sys.stderr)
         return False
     form_pos = out.find(matched)
-    r8_pos = out.find(r8, form_pos)
-    if r8_pos == -1:
-        print(f"bore66-state: {path}: no RESERVE(8) after the matched "
+    slot_pos = out.find(r_slot, form_pos)
+    if slot_pos == -1:
+        print(f"bore66-state: {path}: no RESERVE({slot}) after the matched "
               f"task_struct tail; aborting", file=sys.stderr)
         return False
-    out = out[:r8_pos] + SLOT8_USE + out[r8_pos + len(r8):]
+    out = out[:slot_pos] + SLOT_USES[slot] + out[slot_pos + len(r_slot):]
 
     with open(path, "w", encoding="utf-8", errors="surrogateescape") as fh:
         fh.write(out)
     print(f"bore66-state: {path}: inline fields removed, bore_state "
-          f"def added, task_struct slot 8 consumed")
+          f"def added, task_struct slot {slot} consumed")
     return True
 
 
