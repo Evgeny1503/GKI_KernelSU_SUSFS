@@ -57,6 +57,25 @@ def translate_c(src: str) -> str:
 
 
 def patch_fork(src: str) -> str:
+    # 0. Early NULL right after dup_task_struct: the dup memcpy aliases the
+    # parent's bore_state pointer, and early copy_process failures
+    # (copy_creds ENOMEM, RLIMIT_NPROC, ...) reach free_task before the
+    # late alloc point - the free hook would kfree the PARENT'S live
+    # state. NULL it before any failure path exists.
+    DUP_ANCHOR = ("\tp = dup_task_struct(current, node);\n"
+                  "\tif (!p)\n"
+                  "\t\tgoto fork_out;\n")
+    DUP_NEW = (DUP_ANCHOR +
+               "#ifdef CONFIG_SCHED_BORE\n"
+               "\tp->bore_state = NULL;\n"
+               "#endif // CONFIG_SCHED_BORE\n")
+    if DUP_ANCHOR in src and "p->bore_state = NULL;" not in src:
+        src = src.replace(DUP_ANCHOR, DUP_NEW, 1)
+    elif "p->bore_state = NULL;" not in src:
+        print("bore66-flat: fork.c dup_task_struct anchor not found; "
+              "aborting", file=sys.stderr)
+        sys.exit(1)
+
     if ALLOC_MARK in src:
         return src
     old = ("#ifdef CONFIG_SCHED_BORE\n"

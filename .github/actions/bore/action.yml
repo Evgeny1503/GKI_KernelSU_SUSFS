@@ -294,13 +294,19 @@ runs:
       #     its stock layout exactly), defines struct bore_state with the
       #     identical field layout (both spinlocks kept, pointer identity
       #     preserved), and consumes task_struct's free
-      #     ANDROID_KABI_RESERVE(3) for a 'struct bore_state *' - genksyms
-      #     still sees the stock reserved u64.
+      #     ANDROID_KABI_RESERVE(8) - the LAST slot - for a
+      #     'struct bore_state *': Google eats 6.6 slots in ascending order
+      #     (dmabuf=1 on 6.6.98+, user_dumpable=2 on 6.6.14x), so the
+      #     original slot-3 choice sat exactly on the next consumption
+      #     target. genksyms still sees the stock reserved u64.
       #   - bore66_flat.py translates every accessor (se->X ->
       #     task_of(se)->bore_state->X, p->se.X -> p->bore_state->X,
       #     curr->X -> task_of(curr)->bore_state->X, P(se.X) ->
-      #     P(bore_state->X)), allocates the state in copy_process (goto
-      #     bad_fork_cleanup_bore on ENOMEM, label before
+      #     P(bore_state->X)), NULLs the pointer right after
+      #     dup_task_struct (the dup memcpy aliases the parent's pointer;
+      #     without the early NULL an early-failure free_task would kfree
+      #     the parent's live state), allocates the state in copy_process
+      #     (goto bad_fork_cleanup_bore on ENOMEM, label before
       #     bad_fork_cleanup_thread - the dmabuf_info pattern), allocates
       #     init_task's static state in sched_bore_init, and frees it
       #     NULL-safely in free_task() before trace_android_vh_free_task.
@@ -322,7 +328,7 @@ runs:
         python3 "${{ github.workspace }}/.github/scripts/bore66_flat.py" \
           kernel/sched/bore.c kernel/sched/fair.c kernel/fork.c kernel/sched/debug.c
 
-        echo "=== task_struct slot 3 ==="
+        echo "=== task_struct slot 8 ==="
         grep -B1 -A2 'bore-kabi: 6.6 burst state' include/linux/sched.h | head -5
         echo "=== residual accessor check ==="
         if grep -rn -- '->se\.burst_\|se->burst_\|P(se\.burst' \

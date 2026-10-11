@@ -17,10 +17,15 @@ the kernel's _Static_assert refuses it (verified by compiling). So instead:
   2. Define struct bore_state with the SAME field layout - both
      sched_burst_cache instances and all scalars - so the author's locking
      design and every cache-pointer identity are preserved unchanged.
-  3. task_struct consumes free ANDROID_KABI_RESERVE(3) for
-     'struct bore_state *bore_state' (precedent: dmabuf_info at slot 1).
-     Under genksyms the macro collapses to the stock reserved u64, so the
-     KMI symbol list is unchanged.
+  3. task_struct consumes free ANDROID_KABI_RESERVE(8) - the LAST slot,
+     farthest from Google's consumption frontier - for
+     'struct bore_state *bore_state'. Google actively eats 6.6 slots in
+     ascending order: dmabuf_info took slot 1 (6.6.98+) and user_dumpable
+     slot 2 (6.6.14x), so slot 3 - this script's original choice - is the
+     NEXT one Google will consume. Slot 8 is free in every built 6.6
+     sublevel (verified stock 6.6.77, 6.6.118 and 6.6.143) and under
+     genksyms the macro collapses to the stock reserved u64, so the KMI
+     symbol list is unchanged.
   4. Accessor translation (companion script bore66_flat.py): se->X becomes
      task_of(se)->bore_state->X, p->se.X becomes p->bore_state->X.
   5. Allocation: fork.c allocates the state right before sched_clone_bore
@@ -118,12 +123,12 @@ TS_SLOT3_NEW_FORMS = [
     ),
 ]
 
-SLOT3_USE = (
+SLOT8_USE = (
     "#ifdef CONFIG_SCHED_BORE\n"
     "\t" + MARK + "\n"
-    "\tANDROID_KABI_USE(3, struct bore_state *bore_state);\n"
+    "\tANDROID_KABI_USE(8, struct bore_state *bore_state);\n"
     "#else\n"
-    "\tANDROID_KABI_RESERVE(3);\n"
+    "\tANDROID_KABI_RESERVE(8);\n"
     "#endif\n"
 )
 
@@ -140,10 +145,13 @@ def process(path: str) -> bool:
               f"absent (not the 5.9.6 6.6 shape); no edit")
         return True
 
-    # Find which task_struct tail shape this sublevel carries and locate
-    # its slot-3 RESERVE. Each form tuple ends with the slot-3 line; the
-    # prefix (dmabuf USEs or plain reserves) disambiguates task_struct from
-    # sibling structs with similar tails. Exactly one form must match once.
+    # Find which task_struct tail shape this sublevel carries. Each form
+    # tuple ends at the slot-3 RESERVE; the prefix (dmabuf USEs or plain
+    # reserves) disambiguates task_struct from sibling structs with similar
+    # tails. Exactly one form must match once. The POINTER then goes to
+    # slot 8 (the tail's last RESERVE, five lines below the form's end in
+    # every known era), not slot 3 - slot 3 is Google's next consumption
+    # target on 6.6 (dmabuf took 1, user_dumpable took 2).
     matched = None
     for prefix_and_slot in TS_SLOT3_NEW_FORMS:
         n = src.count(prefix_and_slot)
@@ -170,16 +178,27 @@ def process(path: str) -> bool:
     out = out.replace(anchor,
                       "#endif // CONFIG_SCHED_BORE\n\n" + BORE_STATE_DEF +
                       "\nstruct sched_entity {", 1)
-    # Replace ONLY the slot-3 line within the matched form's context:
-    # split the matched form at its final line (the slot-3 RESERVE).
-    prefix = matched.rsplit("\tANDROID_KABI_RESERVE(3);\n", 1)[0]
-    out = out.replace(prefix + "\tANDROID_KABI_RESERVE(3);\n",
-                      prefix + SLOT3_USE, 1)
+    # Replace ONLY the tail's RESERVE(8) line: locate the matched form
+    # (unique), then the tail's slot-8 RESERVE after it. sched_rt_entity
+    # and sched_entity stop at RESERVE(4), so RESERVE(8) appears exactly
+    # once per file - enforce that.
+    r8 = "\tANDROID_KABI_RESERVE(8);\n"
+    if out.count(r8) != 1:
+        print(f"bore66-state: {path}: found {out.count(r8)} "
+              f"ANDROID_KABI_RESERVE(8) lines (expected 1)", file=sys.stderr)
+        return False
+    form_pos = out.find(matched)
+    r8_pos = out.find(r8, form_pos)
+    if r8_pos == -1:
+        print(f"bore66-state: {path}: no RESERVE(8) after the matched "
+              f"task_struct tail; aborting", file=sys.stderr)
+        return False
+    out = out[:r8_pos] + SLOT8_USE + out[r8_pos + len(r8):]
 
     with open(path, "w", encoding="utf-8", errors="surrogateescape") as fh:
         fh.write(out)
     print(f"bore66-state: {path}: inline fields removed, bore_state "
-          f"def added, task_struct slot 3 consumed")
+          f"def added, task_struct slot 8 consumed")
     return True
 
 
